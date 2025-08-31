@@ -1,0 +1,36 @@
+---
+title: "MPDW Lat 1"
+author: "Ibrahim Zaidan"
+date: "2025-08-31"
+output: html_document
+---
+
+```{r}
+packages <- c(
+  "forecast", "graphics", "TTR", "TSA", "aTSA", "lmtest", "MLmetrics", 
+  "car", "dplyr", "MASS", "tsibble", "tseries", "ggplot2", "nortest"
+)
+
+new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+
+if(length(new_packages)) install.packages(new_packages)
+
+lapply(packages, library, character.only = TRUE)
+
+```
+```{r}
+library(forecast)
+library(graphics)
+library(TTR)
+library(TSA)
+library(aTSA)
+library(lmtest)
+library(MLmetrics)
+library(car)
+library(dplyr)
+library(MASS)
+library(tsibble)
+library(tseries)
+library(ggplot2)
+library(nortest)
+```
