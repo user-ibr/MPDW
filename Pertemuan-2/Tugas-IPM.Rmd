@@ -1,0 +1,181 @@
+---
+title: "MPDW Kuliah IPM"
+author: "Ibrahim Zaidan"
+date: "2025-08-29"
+output: html_document
+---
+# Download Package dan Eksplorasi Data
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo = TRUE)
+need <- function(pkgs){
+  to_install <- pkgs[!pkgs %in% installed.packages()[,1]]
+  if(length(to_install)) install.packages(to_install, repos = "https://cloud.r-project.org")
+  invisible(lapply(pkgs, require, character.only = TRUE))
+}
+need(c("readxl","dplyr","ggplot2","lmtest","car"))
+```
+```{r}
+library(readxl); library(dplyr)
+
+data_path <- "C:/Users/De Ibrahim/kuliah/sem 5/Kuliah/Data IPM Kab Bekasi.xlsx"
+
+df <- read_excel(data_path)
+
+names(df) <- gsub("\\s+","", names(df))   
+
+if(!"Tahun" %in% names(df)) stop("Kolom 'Tahun' tidak ditemukan.")
+ipm_col <- setdiff(names(df)[sapply(df, is.numeric)], "Tahun")
+if(length(ipm_col) != 1) stop("Harus ada tepat satu kolom IPM numerik.")
+ipm_name <- ipm_col
+
+dat <- df %>%
+  select(Tahun, IPM = all_of(ipm_name)) %>%
+  arrange(Tahun)
+
+print(dat)
+```
+```{r}
+library(ggplot2)
+ggplot(dat, aes(x = Tahun, y = IPM)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "IPM Kab. Bekasi (2010–2024)", x = "Tahun", y = "IPM")
+```
+Time-Series plot di atas menunjukkan seiring waktu, IPM semakin naik
+
+```{r}
+mod <- lm(IPM ~ Tahun, data = dat)
+summary(mod)
+
+dat$e_hat <- resid(mod)
+
+ggplot(dat, aes(x = Tahun, y = e_hat)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line() + geom_point() +
+  labs(title = "Residual Model Tren", x = "Tahun", y = "Residual")
+
+```
+Sisaan vs Order menunjukkan adanya pola pada sisaan. Untuk lebih lanjut akan digunakan uji formal melihat normalitas sisaan dan plot ACF dan PACF untuk melihat apakah ada autokorelasi atau tidak.
+```{r}
+par(mfrow=c(1,2))
+acf(dat$e_hat, main = "ACF Residual")
+pacf(dat$e_hat, main = "PACF Residual")
+par(mfrow=c(1,1))
+```
+Berdasarkan plot ACF dan PACF, terlihat semua dalam rentang batas dan tidak ada lag yang signifikan. Namun, untuk lebih memastikan akan dilakukan uji formal dengan uji Durbin Watson.
+# Periksa Autokorelasi DW-Test
+```{r}
+library(lmtest)
+dwtest(mod, alternative = "two.sided")
+```
+Dengan nilai p-value < 0.05 dapat disimpulkan bahwa tolak H0, cukup bukti mengatakan adanya autokorelasi. Oleh karena itu, diperlukan penangan autokorelasi.
+
+# Cochrane-Orcutt
+```{r}
+if (!require(orcutt)) {
+  install.packages("remotes", repos = "https://cloud.r-project.org")
+  remotes::install_github("cran/orcutt")
+  library(orcutt)
+}
+model <- lm(IPM ~ Tahun, data = dat)
+
+library(orcutt)
+modelCO <- cochrane.orcutt(model)
+summary(modelCO)
+
+```
+Hasil juga menunjukkan bahwa nilai DW dan p-value meningkat menjadi  1.56190
+ dan 1.155e-01. nilai p-value > 0.05, artinya belum cukup bukti menyatakan bahwa sisaan terdapat autokorelasi pada taraf nyata 5%. Untuk nilai ρ̂ 
+ optimum yang digunakan adalah  0.409568
+ 
+# Metode Cochrane-Orcutt Manual
+```{r}
+rho<- modelCO$rho 
+rho 
+IPM.trans   <- dat$IPM[-1]   - dat$IPM[-length(dat$IPM)] * rho
+Tahun.trans <- dat$Tahun[-1] - dat$Tahun[-length(dat$Tahun)] * rho
+
+modelCOmanual <- lm(IPM.trans ~ Tahun.trans)
+summary(modelCOmanual)
+
+b0bintang <- modelCOmanual$coefficients[1]   
+b1        <- modelCOmanual$coefficients[2]   
+
+b0 <- b0bintang / (1 - rho) 
+b0
+b1
+```
+Hasil perhitungan koefisien regresi tersebut akan menghasilkan hasil yang sama dengan model yang dihasilkan menggunakan packages
+# Metode Hidreth-Lu.
+```{r}
+model <- lm(IPM ~ Tahun, data = dat)
+
+hildreth.lu.func <- function(r, model){
+  x <- model.matrix(model)[,-1]       # variabel X (Tahun)
+  y <- model.response(model.frame(model)) # variabel Y (IPM)
+  n <- length(y)
+  t <- 2:n
+  
+  y <- y[t] - r * y[t-1]
+  x <- x[t] - r * x[t-1]
+  
+  return(lm(y ~ x))
+}
+
+r <- seq(0.1, 0.9, by = 0.1)
+tab <- data.frame(
+  rho = r,
+  SSE = sapply(r, function(i) deviance(hildreth.lu.func(i, model)))
+)
+round(tab, 4)
+
+rOpt <- seq(0.2, 0.5, by = 0.001)
+tabOpt <- data.frame(
+  rho = rOpt,
+  SSE = sapply(rOpt, function(i) deviance(hildreth.lu.func(i, model)))
+)
+
+rho_best <- tabOpt$rho[which.min(tabOpt$SSE)]
+rho_best
+
+plot(tab$SSE ~ tab$rho, type = "l", xlab = "Rho", ylab = "SSE")
+abline(v = rho_best, lty = 2, col = "red", lwd = 2)
+text(x = rho_best, y = min(tabOpt$SSE), labels = paste0("rho=", round(rho_best,3)), pos = 4, cex = 0.8)
+
+modelHL <- hildreth.lu.func(rho_best, model)
+summary(modelHL)
+
+cat("y = ",
+    round(coef(modelHL)[1] / (1 - rho_best), 4),
+    "+",
+    round(coef(modelHL)[2], 4),
+    "* x\n")
+
+library(lmtest)
+dwtest(modelHL)
+
+sseModelawal <- anova(model)$`Sum Sq`[-1]
+sseModelCO   <- anova(modelCOmanual)$`Sum Sq`[-1]  # dari Cochrane-Orcutt
+sseModelHL   <- anova(modelHL)$`Sum Sq`[-1]
+
+n <- nrow(dat)
+mseModelawal <- sseModelawal / n
+mseModelCO   <- sseModelCO / n
+mseModelHL   <- sseModelHL / n
+```
+ p-value sebesar 0.1158, di mana p-value > α=5%. Artinya tak tolak H0
+ atau belum cukup bukti menyatakan bahwa ada autokorelasi dalam data nilai IPM dengan metode Hildreth-Lu pada taraf nyata 5%.
+
+# Matriks perbandingan
+```{r}
+akurasi <- matrix(c(sseModelawal, sseModelCO, sseModelHL,
+                    mseModelawal, mseModelCO, mseModelHL),
+                  nrow = 2, ncol = 3, byrow = TRUE)
+colnames(akurasi) <- c("Model Awal", "Cochrane-Orcutt", "Hildreth-Lu")
+rownames(akurasi) <- c("SSE", "MSE")
+akurasi
+
+```
+Berdasarkan hasil tersebut dapat diketahui bahwa hasil penanganan autokorelasi dengan metode Cochrane-Orcutt dan Hildreth-Lu memiliki SSE yang hampir sama, sebesar 0.20726572 dan 0.20726581
+ dan lebih baik dibandingkan model awal ketika autokorelasi masih terjadi, yaitu sebesar 0.54240762
+.
