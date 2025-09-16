@@ -1,0 +1,270 @@
+---
+title: "MPDW-Pertemuan-3"
+author: "Ibrahim Zaidan"
+date: "2025-09-15"
+output: html_document
+---
+
+# Model regression with distributed lag
+## Persiapan
+```{r setup, message=FALSE, warning=FALSE}
+packages <- c("dLagM", "forecast", "Metrics", "rio")
+new.packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+library(dLagM)
+library(forecast)
+library(Metrics)
+library(rio)
+
+# Import data CSV kamu
+data <- rio::import("C:/Users/De Ibrahim/kuliah/sem 5/NewDelhi_Air_quality.csv")
+
+str(data)
+n <- nrow(data)
+train <- data[1:round(0.75*n), ]
+test  <- data[(round(0.75*n)+1):n, ]
+
+x_train <- as.numeric(train$pm10)
+y_train <- as.numeric(train$AQI)
+
+x_test  <- as.numeric(test$pm10)
+y_test  <- as.numeric(test$AQI)
+
+```
+
+## Model DLM dasar (q=1)
+```{r}
+model.dlm1 <- dlm(x = x_train, y = y_train, q = 1)
+summary(model.dlm1)
+
+AIC(model.dlm1); BIC(model.dlm1)
+
+fore.dlm1 <- dLagM::forecast(model = model.dlm1, x = x_test, h = length(y_test))
+
+mape.dlm1 <- Metrics::mape(y_test, fore.dlm1$forecasts)
+mape.dlm1
+
+GoF(model.dlm1)
+```
+Adjusted R² = 0.052 masih sangat rendah, Residual standard error = 2.117 cukup besar, F-statistic p = 0.098 tidak signifikan secara keseluruhan, dan AIC = 234.8 dan BIC = 242.7 relatif tinggi.
+
+Artinya, Hubungan pm10 terhadap AQI belum terlihat kuat jika hanya memakai lag 1.
+Hanya lag-1 yang signifikan, dan model secara keseluruhan belum fit baik.
+
+## Menentukan lag optimum
+```{r}
+finiteDLMauto(
+  formula = AQI ~ pm10,
+  data = data.frame(train),
+  q.min = 1, q.max = 10,
+  model.type = "dlm",
+  error.type = "AIC",
+  trace = TRUE
+)
+```
+Dari hasil tersebut, terlihat bahwa AIC paling kecil terdapat di q=10. Maka lag optimumnya adalah q=10
+
+## Model DLM dengan lag optimum
+```{r}
+model.dlm.opt <- dlm(x = train$pm10, y = train$AQI, q = 10)
+summary(model.dlm.opt)
+
+AIC(model.dlm.opt); BIC(model.dlm.opt)
+
+fore.dlm.opt <- dLagM::forecast(model = model.dlm.opt, x = x_test, h = length(y_test))
+mape.dlm.opt <- Metrics::mape(y_test, fore.dlm.opt$forecasts)
+mape.dlm.opt
+
+GoF(model.dlm.opt)
+```
+Adjusted R² = 0.3466 naik jauh dibanding model q=1
+
+Residual standard error = 1.702 lebih kecil
+
+F-statistic p = 0.0064 model signifikan secara keseluruhan
+
+AIC = 183.7 dan BIC = 206.8 turun drastis dari model q=1
+
+GoF = 0.1699 sedikit turun karena kompleksitas, tapi ini normal
+
+Model ini menjelaskan variasi AQI lebih baik dan signifikan secara statistik dibanding ketika hanya menggunakan DLM dasar, hal ini menunjukkan bahwa pengaruh pm10 terhadap AQI bersifat tertunda (lagged effect) — butuh waktu beberapa periode sebelum dampaknya tampak pada kualitas udara.
+
+# Model Autoregressive
+```{r}
+library(dLagM)
+
+# --- Pastikan data siap ---
+# Contoh: data harus punya kolom AQI dan pm10
+# dan berupa data.frame bersih
+data <- data[, c("AQI", "pm10")]
+
+# --- 1. Cari p,q optimal dengan AIC ---
+model.ardl.opt <- ardlBoundOrders(
+  data = data,
+  ic = "AIC",
+  formula = AQI ~ pm10
+)
+
+# --- 2. Ambil p dan q optimal ---
+min_p <- numeric(6)
+for (i in 1:6) {
+  min_p[i] <- min(model.ardl.opt$Stat.table[[i]], na.rm = TRUE)
+}
+q_opt <- which.min(min_p)
+p_opt <- which.min(model.ardl.opt$Stat.table[[q_opt]])
+
+data.frame(
+  "q_optimum" = q_opt,
+  "p_optimum" = p_opt,
+  "AIC" = model.ardl.opt$min.Stat
+)
+
+# --- 3. Bagi data jadi train dan test ---
+set.seed(123)
+n <- nrow(data)
+train_size <- floor(0.8 * n)
+train <- data[1:train_size, ]
+test  <- data[(train_size+1):n, ]
+
+# --- 4. Bangun model ARDL final ---
+model.ardl <- ardlDlm(
+  formula = AQI ~ pm10,
+  data = train,
+  p = p_opt,
+  q = q_opt
+)
+
+summary(model.ardl)
+AIC(model.ardl)
+```
+```{r}
+library(Metrics)  # untuk MAPE
+library(dLagM)
+
+# --- Ambil koef dari model ---
+coef <- coef(model.ardl$model)
+
+# --- Data lag awal dari training ---
+y_last <- tail(train$AQI, 1)
+x_lags <- rev(tail(train$pm10, 13))  # karena q=1 → total 14 lag: t & t-1..t-13
+
+n_fore <- nrow(test)
+y_forecast <- numeric(n_fore)
+
+for (t in seq_len(n_fore)) {
+  x_input <- c(test$pm10[t], x_lags)  # pm10 saat ini + 13 lag
+  y_pred <- coef["(Intercept)"] +
+            sum(coef[grep("pm10", names(coef))] * x_input[1:14]) +
+            coef["AQI.1"] * y_last
+  y_forecast[t] <- y_pred
+  
+  # update lag untuk langkah berikutnya
+  y_last <- y_pred
+  x_lags <- c(test$pm10[t], x_lags[1:13])
+}
+
+# --- Buat objek mirip forecast ---
+fore.ardl <- list(
+  mean = y_forecast,
+  actual = test$AQI
+)
+
+# --- Hitung MAPE ---
+# Hitung MAPE manual
+mape.ardl <- mean(abs((fore.ardl$actual - fore.ardl$mean) / fore.ardl$actual)) * 100
+mape.ardl
+
+
+# --- GoF untuk data training ---
+GoF(model.ardl)
+```
+```{r}
+library(dynlm)
+
+# Misal data training dan test sudah ada:
+# y_train (ts), x_train (ts)
+# y_test (ts),  x_test (ts)
+
+# Pastikan keduanya dalam bentuk ts yang sama
+y_train <- ts(y_train, frequency = 1)
+x_train <- ts(x_train, frequency = 1)
+
+train_data <- ts.union(y = y_train, x = x_train)
+
+## =========================
+## 1. DLM (lag hingga 2)
+## =========================
+x_all <- ts(c(x_train, x_test), start = start(x_train), frequency = 1)
+y_all <- ts(c(y_train, rep(NA, length(x_test))),
+            start = start(y_train), frequency = 1)
+
+all_data <- ts.union(y = y_all, x = x_all)
+
+# ✅ DLM murni: hanya lag dari x, TANPA lag y
+model.dlm.dynlm <- dynlm(y ~ L(x, 0:2), data = all_data)
+
+# Ambil fitted values bagian test
+full_pred_dlm <- fitted(model.dlm.dynlm)
+fore.dlm <- tail(full_pred_dlm, length(x_test))
+
+# Hitung MAPE
+mape_dlm <- mean(abs((y_test - fore.dlm)/y_test)) * 100
+mape_dlm
+
+```
+```{r}
+## =========================
+## 2. Koyck
+## =========================
+library(dynlm)
+
+# Buat gabungan train+test
+x_all <- ts(c(x_train, x_test))
+y_all <- ts(c(y_train, rep(NA, length(y_test))))
+all_data <- ts.union(y = y_all, x = x_all)
+
+# Fit model Koyck
+model.koyck <- dynlm(y ~ L(y,1) + x, data = all_data)
+
+# Prediksi: ambil fitted value bagian akhir
+full_fitted <- fitted(model.koyck)
+fore.koyck <- tail(full_fitted, length(y_test))
+
+# Hitung MAPE
+mape.koyck <- mean(abs((y_test - fore.koyck) / y_test)) * 100
+mape.koyck
+
+```
+```{r}
+## =========================
+## 3. ARDL(p=1, q=2)
+## =========================
+# Gabungkan data training + data test jadi satu ts
+x_all <- ts(c(x_train, x_test), start = start(x_train), frequency = 1)
+y_all <- ts(c(y_train, rep(NA, length(x_test))),
+            start = start(y_train), frequency = 1)
+
+all_data <- ts.union(y = y_all, x = x_all)
+
+# Refitting model pada seluruh data untuk menghasilkan prediksi
+fit.ardl.dynlm <- dynlm(y ~ L(y, 1) + L(x, 0:2), data = all_data)
+
+# Ambil fitted values bagian test saja (baris akhir sebanyak length(x_test))
+full_pred <- fitted(fit.ardl.dynlm)
+fore.ardl.dynlm <- tail(full_pred, length(x_test))
+
+# Hitung MAPE
+mape_ardl_dynlm <- mean(abs((y_test - fore.ardl.dynlm)/y_test))*100
+mape_ardl_dynlm
+
+```
+```{r}
+cat("📊 HASIL PERBANDINGAN MAPE\n")
+cat("MAPE Distributed Lag (dLagM):", mape.dlm, "\n")
+cat("MAPE ARDL (dLagM):", mape.ardl, "\n")
+cat("MAPE Koyck (dynlm):", mape.koyck, "\n")
+cat("MAPE Distributed Lag (dynlm):", mape_dlm, "\n")
+cat("MAPE ARDL (dynlm):", mape_ardl_dynlm, "\n")
+
+```
