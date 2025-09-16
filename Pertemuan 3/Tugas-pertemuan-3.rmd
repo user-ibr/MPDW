@@ -30,7 +30,6 @@ y_train <- as.numeric(train$AQI)
 
 x_test  <- as.numeric(test$pm10)
 y_test  <- as.numeric(test$AQI)
-
 ```
 
 ## Model DLM dasar (q=1)
@@ -91,22 +90,18 @@ GoF = 0.1699 sedikit turun karena kompleksitas, tapi ini normal
 Model ini menjelaskan variasi AQI lebih baik dan signifikan secara statistik dibanding ketika hanya menggunakan DLM dasar, hal ini menunjukkan bahwa pengaruh pm10 terhadap AQI bersifat tertunda (lagged effect) — butuh waktu beberapa periode sebelum dampaknya tampak pada kualitas udara.
 
 # Model Autoregressive
+## Mencari nilai p & q optimum
 ```{r}
 library(dLagM)
 
-# --- Pastikan data siap ---
-# Contoh: data harus punya kolom AQI dan pm10
-# dan berupa data.frame bersih
 data <- data[, c("AQI", "pm10")]
 
-# --- 1. Cari p,q optimal dengan AIC ---
 model.ardl.opt <- ardlBoundOrders(
   data = data,
   ic = "AIC",
   formula = AQI ~ pm10
 )
 
-# --- 2. Ambil p dan q optimal ---
 min_p <- numeric(6)
 for (i in 1:6) {
   min_p[i] <- min(model.ardl.opt$Stat.table[[i]], na.rm = TRUE)
@@ -120,14 +115,12 @@ data.frame(
   "AIC" = model.ardl.opt$min.Stat
 )
 
-# --- 3. Bagi data jadi train dan test ---
 set.seed(123)
 n <- nrow(data)
 train_size <- floor(0.8 * n)
 train <- data[1:train_size, ]
 test  <- data[(train_size+1):n, ]
 
-# --- 4. Bangun model ARDL final ---
 model.ardl <- ardlDlm(
   formula = AQI ~ pm10,
   data = train,
@@ -138,128 +131,114 @@ model.ardl <- ardlDlm(
 summary(model.ardl)
 AIC(model.ardl)
 ```
+Dapat dilihat bahwa q optimum yang didapat adalah 1 dan p optimum yang didapat adalah 13.
+
+## Membangun model autoregressive manual & menghitung MAPE
 ```{r}
-library(Metrics)  # untuk MAPE
+library(Metrics) 
 library(dLagM)
 
-# --- Ambil koef dari model ---
 coef <- coef(model.ardl$model)
 
-# --- Data lag awal dari training ---
 y_last <- tail(train$AQI, 1)
-x_lags <- rev(tail(train$pm10, 13))  # karena q=1 → total 14 lag: t & t-1..t-13
+x_lags <- rev(tail(train$pm10, 13))  
 
 n_fore <- nrow(test)
 y_forecast <- numeric(n_fore)
 
 for (t in seq_len(n_fore)) {
-  x_input <- c(test$pm10[t], x_lags)  # pm10 saat ini + 13 lag
+  x_input <- c(test$pm10[t], x_lags) 
   y_pred <- coef["(Intercept)"] +
             sum(coef[grep("pm10", names(coef))] * x_input[1:14]) +
             coef["AQI.1"] * y_last
   y_forecast[t] <- y_pred
   
-  # update lag untuk langkah berikutnya
   y_last <- y_pred
   x_lags <- c(test$pm10[t], x_lags[1:13])
 }
 
-# --- Buat objek mirip forecast ---
 fore.ardl <- list(
   mean = y_forecast,
   actual = test$AQI
 )
 
-# --- Hitung MAPE ---
-# Hitung MAPE manual
 mape.ardl <- mean(abs((fore.ardl$actual - fore.ardl$mean) / fore.ardl$actual)) * 100
 mape.ardl
 
-
-# --- GoF untuk data training ---
 GoF(model.ardl)
 ```
+Model mampu menjelaskan sekitar 88–92% variasi AQI dengan residual error relatif kecil, dan evaluasi prediksi menunjukkan MAE ≈ 0,46 serta MAPE ≈ 17.266%.
+
+# DLM (lag hingga 2) dengan Library dynlm
 ```{r}
 library(dynlm)
 
-# Misal data training dan test sudah ada:
-# y_train (ts), x_train (ts)
-# y_test (ts),  x_test (ts)
-
-# Pastikan keduanya dalam bentuk ts yang sama
 y_train <- ts(y_train, frequency = 1)
 x_train <- ts(x_train, frequency = 1)
 
 train_data <- ts.union(y = y_train, x = x_train)
 
-## =========================
-## 1. DLM (lag hingga 2)
-## =========================
 x_all <- ts(c(x_train, x_test), start = start(x_train), frequency = 1)
 y_all <- ts(c(y_train, rep(NA, length(x_test))),
             start = start(y_train), frequency = 1)
 
 all_data <- ts.union(y = y_all, x = x_all)
 
-# ✅ DLM murni: hanya lag dari x, TANPA lag y
 model.dlm.dynlm <- dynlm(y ~ L(x, 0:2), data = all_data)
 
-# Ambil fitted values bagian test
 full_pred_dlm <- fitted(model.dlm.dynlm)
 fore.dlm <- tail(full_pred_dlm, length(x_test))
 
-# Hitung MAPE
 mape_dlm <- mean(abs((y_test - fore.dlm)/y_test)) * 100
 mape_dlm
-
 ```
-```{r}
-## =========================
-## 2. Koyck
-## =========================
-library(dynlm)
+model DLM (Distributed Lag Model) dengan lag 0–2 dan menggunakan Library dynlm pada variabel x menghasilkan MAPE ≈ 19,83%
 
-# Buat gabungan train+test
+# Model kocyk
+```{r}
 x_all <- ts(c(x_train, x_test))
 y_all <- ts(c(y_train, rep(NA, length(y_test))))
 all_data <- ts.union(y = y_all, x = x_all)
 
-# Fit model Koyck
 model.koyck <- dynlm(y ~ L(y,1) + x, data = all_data)
 
-# Prediksi: ambil fitted value bagian akhir
 full_fitted <- fitted(model.koyck)
 fore.koyck <- tail(full_fitted, length(y_test))
 
-# Hitung MAPE
 mape.koyck <- mean(abs((y_test - fore.koyck) / y_test)) * 100
 mape.koyck
-
 ```
+Hasil model Koyck menunjukkan MAPE ≈ 15,62% pada data test
+
+# ARDL(p=1, q=2) dengan Library dynlm
 ```{r}
-## =========================
-## 3. ARDL(p=1, q=2)
-## =========================
-# Gabungkan data training + data test jadi satu ts
+library(dynlm)
+
 x_all <- ts(c(x_train, x_test), start = start(x_train), frequency = 1)
 y_all <- ts(c(y_train, rep(NA, length(x_test))),
             start = start(y_train), frequency = 1)
 
 all_data <- ts.union(y = y_all, x = x_all)
 
-# Refitting model pada seluruh data untuk menghasilkan prediksi
 fit.ardl.dynlm <- dynlm(y ~ L(y, 1) + L(x, 0:2), data = all_data)
 
-# Ambil fitted values bagian test saja (baris akhir sebanyak length(x_test))
 full_pred <- fitted(fit.ardl.dynlm)
 fore.ardl.dynlm <- tail(full_pred, length(x_test))
 
-# Hitung MAPE
 mape_ardl_dynlm <- mean(abs((y_test - fore.ardl.dynlm)/y_test))*100
 mape_ardl_dynlm
 
 ```
+Hasil model ARDL(p=1, q=2) menunjukkan MAPE ≈ 15,52% pada data test
+
+# Perbandingan model terbaik
 ```{r}
+mape.dlm <- 16.99645       
+mape.ardl <- 17.26622
+mape.koyck <- 15.6177
+mape_dlm <- 19.82978
+mape_ardl_dynlm <- 15.5169
+
 cat("📊 HASIL PERBANDINGAN MAPE\n")
 cat("MAPE Distributed Lag (dLagM):", mape.dlm, "\n")
 cat("MAPE ARDL (dLagM):", mape.ardl, "\n")
@@ -268,3 +247,4 @@ cat("MAPE Distributed Lag (dynlm):", mape_dlm, "\n")
 cat("MAPE ARDL (dynlm):", mape_ardl_dynlm, "\n")
 
 ```
+Berdasarkan hasil perbandingan MAPE, dapat disimpulkan bahwa model ARDL dan Koyck yang memasukkan efek autoregresif dari AQI cenderung memberikan prediksi lebih akurat dibanding DLM murni dengan MAPE=15.5169 dan MAPE=15.6177
