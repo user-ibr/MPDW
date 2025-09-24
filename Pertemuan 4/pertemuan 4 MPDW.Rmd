@@ -1,0 +1,417 @@
+---
+title: "MPDW Pertemuan 4"
+author: "Ibrahim Zaidan"
+date: "2025-09-24"
+output: 
+  html_document:
+    theme: flatly       
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: none  
+    highlight: tango
+---
+
+
+# White Noise
+
+```{r}
+set.seed(140305)
+wn <- rnorm(300)
+ts.plot(wn)
+ma <- numeric(300)
+```
+
+```{r}
+par(mfrow = c(1, 2)) 
+acf(wn)
+acf(wn, xlim = c(1, 20))
+```
+
+# MA
+
+## Pembangkitan MA(2)
+
+Akan dibangkitkan model MA(2) dengan $\theta_1 = 0,4$ dan $\theta_2 = 0,6$ sebanyak 300 data
+
+### Manual
+
+```{r}
+set.seed(140305)
+ma[1:2] <- wn[1:2]
+```
+
+```{r}
+for(i in 3:300){
+   ma[i] <- wn[i] + 0.4 * wn[i - 1] + 0.6 * wn[i - 2]
+}
+ma
+```
+
+### Menggunakan `arima.sim`
+
+```{r}
+ma_sim <- arima.sim(list(order=c(0,0,2), ma=c(0.4, 0.6)), n=300)
+ma_sim
+```
+
+## Karakteristik MA(2)
+
+```{r}
+ts.plot(ma)
+```
+
+Berdasarkan plot time series tersebut, terlihat bahwa model MA(2) cenderung stasioner dalam rataan.
+
+### ACF
+
+```{r}
+acf(ma,lag.max = 20)
+```
+
+Dapat dilihar berdasarkan ACF cut-off nya di lag = 2.
+
+### PACF
+
+```{r}
+pacf(ma)
+```
+
+Plot PACF tails-off menyerupai gelombang sinus
+
+### EACF
+
+```{r}
+TSA::eacf(ma)
+```
+
+Segitiga yang di hasilkan adalah ketika q = 2.
+
+## Scatter Plot
+
+### Yt dengan Yt-1
+
+```{r}
+yt_ma <- ma[-1]
+
+yt_1_ma <- ma[-300]
+```
+
+```{r}
+plot(y=yt_ma, x=yt_1_ma)
+```
+
+### Korelasi Yt dengan Yt-1
+
+```{r}
+cor(yt_ma,yt_1_ma)
+```
+
+Dari nilai korelasi diatas diketahui bahwa ada hubungan positif antara Yt dengan Yt-1
+
+### Yt dengan Yt-2
+
+```{r}
+yt_ma2 <- ma[-c(1,2)]
+
+yt_2_ma <- ma[-c(299,300)]
+```
+
+```{r}
+plot(y=yt_ma2, x=yt_2_ma)
+```
+
+### Korelasi Yt dengan Yt-2
+
+```{r}
+cor(yt_ma2,yt_2_ma)
+```
+
+Masih ada hubungan positif antara Yt dengan Yt-2
+
+### Yt dengan Yt-3
+
+```{r}
+yt_ma3 <- ma[-c(1,2,3)]
+
+yt_3_ma <- ma[-c(298,299,300)]
+```
+
+```{r}
+plot(y=yt_ma3, x=yt_3_ma)
+```
+
+### Korelasi Yt dengan Yt-3
+
+```{r}
+cor(yt_ma3,yt_3_ma)
+```
+
+Karena nilainya makin mendekati 0, dan bila dilihat dari scatter plot nya antara Yt dengan Yt-3 tidak memiliki hubungan.
+Yang berarti pada MA(2), Yt berhubungan hanya sampai Yt-2 saja.
+
+# AR
+
+## Pembangkitan AR(2)
+
+Akan dibangkitkan model AR(2) dengan $\phi_1 = 0,5$ dan $\phi_2 = 0,2$ sebanyak 300 data
+
+### Manual
+
+```{r}
+set.seed(140305)
+
+n <- length(wn)
+ar2 <- numeric(n)  
+ar2[1:2] <- wn[1:2]
+
+for (i in 3:n) {
+  ar2[i] <- wn[i] + 0.5*ar2[i-1] + 0.2*ar2[i-2]
+}
+ar2
+
+```
+
+### Menggunakan `arima.sim`
+
+```{r}
+ar_sim <- arima.sim(list(order=c(2,0,0), ar=c(0.5, 0.2)), n=300)
+ar_sim
+```
+
+## Karakteristik AR(2)
+
+```{r}
+ts.plot(ar2)
+```
+
+Berdasarkan plot time series tersebut, terlihat bahwa model AR(2) cenderung stasioner dalam rataan.
+
+### ACF
+
+```{r}
+acf(ar2)
+```
+
+Plot diatas tails-off membentuk pola grafik sinus 
+
+### PACF
+
+```{r}
+pacf(ar2)
+```
+
+Plot cut-off pada lag 2, sudah sesuai dengan teori.
+
+### EACF
+
+```{r}
+TSA::eacf(ar2)
+```
+
+Dari pola segitiga bulet, didapet p = 2.
+
+## Scatter Plot
+
+### Yt dengan Yt-1
+
+```{r}
+yt_ar <- ar2[-1]
+
+yt_1_ar <- ar2[-300]
+```
+
+```{r}
+plot(y=yt_ar,x=yt_1_ar)
+```
+
+### Korelasi Yt dengan Yt-1
+
+```{r}
+cor(yt_ar,yt_1_ar)
+```
+Menunjukkan adanya korelasi positif antara Yt dengan Yt-1 pada AR(2)
+
+### Yt dengan Yt-2
+
+```{r}
+yt_ar2 <- ar2[-c(1,2)]
+
+yt_2_ar <- ar2[-c(299,300)]
+```
+
+```{r}
+plot(y = yt_ar2, x = yt_2_ar)
+```
+
+### Korelasi Yt dengan Yt-2
+
+```{r}
+cor(yt_ar2, yt_2_ar)
+```
+Menunjukkan adanya korelasi positif antara Yt dengan Yt-2 pada AR(2)
+
+### Yt dengan Yt-3
+
+```{r}
+yt_ar3 <- ar2[-c(1,2,3)]
+
+yt_3_ar <- ar2[-c(298,299,300)]
+```
+
+```{r}
+plot(y = yt_ar3, x = yt_3_ar)
+```
+
+### Korelasi Yt dengan Yt-3
+
+```{r}
+cor(yt_ar3, yt_3_ar)
+```
+Menunjukkan adanya korelasi positif antara Yt dengan Yt-3 pada AR(2)
+
+# ARMA
+
+## Pembangkitan ARMA(2)
+
+Akan dibangkitkan model ARMA(2) dengan $\phi_1 = 0,5$, $\phi_2 = 0,2$, $\theta_1 = 0,4$, dan $\theta_2 = 0.6$ sebanyak 300 data
+
+### Manual
+
+```{r}
+set.seed(140305)
+n = length(wn)
+phi1 = 0.5
+phi2 = 0.2
+theta1 = 0.4
+theta2 = 0.6
+
+y.arma <- numeric(n)        
+y.arma[1:2] <- wn[1:2]     
+for (i in 3:n){
+  y.arma[i] <- phi1*y.arma[i-1] + phi2*y.arma[i-2] + 
+               theta1*wn[i-1] + theta2*wn[i-2] + wn[i]
+}
+
+y.arma
+```
+
+### Menggunakan `arima.sim`
+
+```{r}
+arma22 <- arima.sim(list(order=c(2,0,2), ar = c(0.5, 0.2), ma = c(0.4, 0.6)), n=300)
+arma22
+```
+
+## Karakteristik ARMA(2)
+
+```{r}
+par(mfrow = c(1, 2))
+ts.plot(y.arma)
+ts.plot(arma22)
+par(mfrow = c(1, 1))
+```
+
+Berdasarkan plot time series tersebut, terlihat bahwa model ARMA(2,2) cenderung stasioner dalam rataan.
+
+### ACF
+
+```{r}
+par(mfrow = c(1, 2))
+acf(y.arma)
+acf(arma22)
+par(mfrow = c(1, 1))
+```
+
+Kedua plot diatas berbentuk tails-off, sesuai dengan teori yang ada
+
+### PACF
+
+```{r}
+par(mfrow = c(1, 2))
+pacf(y.arma)
+pacf(arma22)
+par(mfrow = c(1, 1))
+```
+
+Kedua plot diatas berbentuk tails-off, sesuai dengan teori yang ada
+
+### EACF
+
+```{r}
+TSA::eacf(y.arma)
+TSA::eacf(arma22)
+```
+
+Dari pola segitiga untuk kedua model diatas, terlihat bahwa segitiga nol berada pada ordo AR(2) dan ordo MA(2).
+
+## Scatter Plot
+
+### Yt dengan Yt-1
+
+```{r}
+yt_arma <- arma22[-1]
+
+yt_1_arma <- arma22[-300]
+```
+
+```{r}
+plot(y = yt_arma, x = yt_1_arma)
+```
+
+### Korelasi Yt dengan Yt-1
+
+```{r}
+cor(yt_arma, yt_1_arma)
+```
+Menunjukkan adanya korelasi positif antara Yt dengan Yt-1 pada ARMA
+
+### Yt dengan Yt-2
+
+```{r}
+yt_arma2 = arma22[-c(1,2)]
+
+yt_2_arma = arma22[-c(299,300)]
+```
+
+```{r}
+plot(y = yt_arma2, x = yt_2_arma)
+```
+
+### Korelasi Yt dengan Yt-2
+
+```{r}
+cor(yt_arma2, yt_2_arma)
+```
+
+Menunjukkan adanya korelasi positif antara Yt dengan Yt-2 pada ARMA
+
+### Yt dengan Yt-3
+
+```{r}
+yt_arma3 = arma22[-c(1,2,3)]
+
+yt_3_arma = arma22[-c(298,299,300)]
+```
+
+```{r}
+plot(y = yt_arma3, x = yt_3_arma)
+```
+
+### Korelasi Yt dengan Yt-3
+
+```{r}
+cor(yt_arma3, yt_3_arma)
+```
+Menunjukkan adanya korelasi positif antara Yt dengan Yt-3 pada ARMA
+
+
+
+
+
+
+
+
+
+
