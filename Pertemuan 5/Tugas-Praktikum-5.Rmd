@@ -1,0 +1,245 @@
+---
+title: "MPDW Prak 6"
+author: "Ibrahim Zaidan"
+date: "2025-09-29"
+output: 
+  html_document:
+    theme: flatly       
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: none  
+    highlight: tango
+---
+
+# Eksplorasi data
+
+## Impor data
+
+```{r}
+library(readxl)
+library(tseries)    
+library(forecast)   
+library(ggplot2)
+
+data_crude <- read_excel("C:/Users/De Ibrahim/kuliah/sem 5/Book1.xlsx")
+```
+
+## Visualisasai data
+
+```{r}
+data_crude$Date <- as.Date(data_crude$Date, format="%d/%m/%Y")
+
+# Plot Price untuk visual inspeksi awal
+ggplot(data_crude, aes(x=Date, y=Price)) +
+  geom_line(color="blue") +
+  labs(title="Crude Oil Price Time Series", x="Date", y="Price")
+```
+
+Grafik menunjukkan harga minyak tidak stasioner dalam ragam maupun rata-rata
+
+## Uji statistik
+
+```{r}
+adf_mean <- adf.test(data_crude$Price)
+adf_mean
+lambda <- BoxCox.lambda(data_crude$Price)
+lambda
+```
+Dibuktikan lagi oleh uji statistik, ADF menunjukkan adanya differencing dan Lambda BoxCox menunjukkan di angka 1.55, jauh dari angka 1
+
+artinya secara grafik maupun statistik, terbukti bahwa harga minyak tidak stasioner dalam ragam maupun rataan
+
+## Transformasi Data
+
+```{r}
+price_transformed <- BoxCox(data_crude$Price, lambda=1.550794)
+price_diff <- diff(price_transformed, differences = 1)
+adf_diff <- adf.test(price_diff)
+adf_diff
+```
+
+Setelah melakukan transformasi, Price crude oil sudah stasioner baik dalam mean maupun variance
+
+# Pemodelan ARIMA
+
+```{r}
+library(forecast)
+
+ts_price <- ts(price_diff, start=c(2015,1), frequency=12)  # bulanan
+# Auto ARIMA (otomatis memilih p,d,q)
+fit_arima <- auto.arima(ts_price, seasonal=FALSE, stepwise=FALSE, approximation=FALSE)
+summary(fit_arima)
+checkresiduals(fit_arima)
+
+forecast_arima <- forecast(fit_arima, h=12)
+plot(forecast_arima, main="Forecast Price Crude Oil (ARIMA)")
+```
+setelah transformasi & differencing, seri crude oil sudah stasioner dan tidak ada pola jangka pendek yang bisa dimodelkan, maka memakai ARIMA (0,0,0)
+
+Model ARIMA(0,0,0) artinya tidak ada autoregressive (p=0), differencing (d=0), dan moving average (q=0).
+
+Residual relatif kecil dan ACF1 ≈ 0, menunjukkan tidak ada autokorelasi signifikan.
+
+MAPE = 100% → karena series asli belum di-backtransform ke price asli, jadi ini relatif terhadap scale transformed.
+
+## Cek MAPE ARIMA (0,0,0)
+
+```{r}
+library(forecast)
+
+fit_arima <- Arima(ts_price, order=c(0,0,0))
+fc <- forecast(fit_arima, h=length(ts_price))  
+
+last_boxcox <- tail(BoxCox(data_crude$Price, lambda=1.550794), 1)
+fc_level <- cumsum(c(last_boxcox, fc$mean))[-1]
+
+fc_original <- InvBoxCox(fc_level, lambda=1.550794)
+
+actual <- tail(data_crude$Price, length(fc_original))  
+mape <- mean(abs((actual - fc_original)/actual)) * 100
+mape
+```
+Forecast ARIMA(0,0,0) rata-rata meleset ±38% dari harga asli.
+
+model sudah statistically benar, tapi akurasinya rendah untuk prediksi harga tepat, karena seri residual masih mengandung volatilitas yang tinggi.
+
+kita lanjut ke GARCH untuk menangkap volatilitas harga crude oil
+
+## GARCH untuk mengatasi Volatilitas
+
+```{r}
+library(rugarch)
+
+data_garch <- ts_price  # stasioner, differenced + Box-Cox
+spec <- ugarchspec(
+  variance.model = list(model="sGARCH", garchOrder=c(1,1)),
+  mean.model     = list(armaOrder=c(0,0), include.mean=TRUE),
+  distribution.model = "std"   # student-t untuk heavy tails
+)
+fit_garch <- ugarchfit(spec, data_garch)
+fit_garch
+vol <- sigma(fit_garch)
+plot(vol, type="l", main="Conditional Volatility Crude Oil (GARCH(1,1))", ylab="Sigma", xlab="Time")
+fc_garch <- ugarchforecast(fit_garch, n.ahead=12)
+sigma_forecast <- sigma(fc_garch)
+mu_forecast <- fitted(fc_garch)
+
+```
+
+Model GARCH(1,1) sudah fit untuk crude oil differenced + Box-Cox.
+
+Volatilitas dapat diprediksi: tidak meledak, shock baru berdampak sedang, dan residual sudah cocok dengan distribusi.
+
+Tidak ada efek leverage → baik untuk prediksi symmetric volatility.
+
+lanjut kita buat pipeline ARIMA(0,0,0) + GARCH(1,1)
+
+# Gabungan ARIMA(0,0,0)-GARCH(1,1)
+
+## Eksplorasi
+
+```{r}
+library(forecast)
+library(rugarch)
+
+price <- data_crude$Price
+
+lambda <- BoxCox.lambda(price)
+price_boxcox <- BoxCox(price, lambda=lambda)
+
+ts_price <- diff(price_boxcox)
+spec <- ugarchspec(
+  variance.model = list(model="sGARCH", garchOrder=c(1,1)),
+  mean.model     = list(armaOrder=c(0,0), include.mean=TRUE),
+  distribution.model = "std"
+)
+fit <- ugarchfit(spec, ts_price)
+fit
+h <- 12
+fc <- ugarchforecast(fit, n.ahead=h)
+
+mu_forecast <- fitted(fc)
+sigma_forecast <- sigma(fc)
+
+last_boxcox <- tail(price_boxcox,1)
+fc_level <- cumsum(c(last_boxcox, mu_forecast))[-1]
+price_forecast <- InvBoxCox(fc_level, lambda=lambda)
+
+forecast_dates <- seq(from=tail(data_crude$Date,1) + 30, by="month", length.out=h)
+
+forecast_df <- data.frame(
+  Date = forecast_dates,
+  Forecast = price_forecast,
+  Sigma = sigma_forecast
+)
+forecast_df
+library(ggplot2)
+
+ggplot() +
+  geom_line(aes(x=data_crude$Date, y=data_crude$Price), color="blue") +
+  geom_line(aes(x=forecast_df$Date, y=forecast_df$Forecast), color="red", linetype="dashed") +
+  labs(title="ARIMA(0,0,0)-GARCH(1,1) Forecast Crude Oil",
+       x="Date", y="Price (USD/barrel)") +
+  theme_minimal()
+```
+ARIMA(0,0,0) menangkap mean series.
+
+GARCH(1,1) menangkap volatilitas yang berubah-ubah.
+
+Model fit & stabil, residual tidak ada autokorelasi, tidak ada ARCH effect tersisa.
+
+Volatilitas moderate → harga crude oil tidak diprediksi meledak, tapi fluktuatif.
+
+Forecast bisa digunakan untuk mean + volatilitas 12 bulan ke depan, tapi interval kepercayaan harus disesuaikan dengan sigma dari GARCH.
+
+## Nilai MAPE akhir
+
+```{r}
+last_boxcox <- tail(price_boxcox,1)
+fc_level <- cumsum(c(last_boxcox, mu_forecast))[-1]
+price_forecast <- InvBoxCox(fc_level, lambda=lambda)
+
+actual <- tail(price, length(price_forecast))
+
+mape_garch <- mean(abs((actual - price_forecast)/actual)) * 100
+mape_garch
+```
+
+Rata-rata forecast mean meleset ±5,65% (<10%) dari harga asli → jauh lebih akurat dibanding ARIMA(0,0,0) sederhana sebelumnya (≈38%).
+
+Penurunan MAPE drastis ini karena GARCH menangkap volatilitas time-varying, sehingga prediksi mean lebih realistis terhadap fluktuasi harga crude oil.
+
+Artinya, model sekarang cukup reliable untuk forecasting harga + interval volatilitas 12 bulan ke depan.
+
+## Visualisasi akhir
+
+```{r}
+library(ggplot2)
+
+mu_forecast <- fitted(fc)      # mean forecast
+sigma_forecast <- sigma(fc)    # conditional volatility
+
+last_boxcox <- tail(price_boxcox, 1)
+fc_level <- cumsum(c(last_boxcox, mu_forecast))[-1]
+price_forecast <- InvBoxCox(fc_level, lambda=lambda)
+
+forecast_dates <- seq(from=tail(data_crude$Date,1) + 30, by="month", length.out=length(mu_forecast))
+
+forecast_df <- data.frame(
+  Date = as.Date(forecast_dates),
+  Forecast = price_forecast
+)
+
+forecast_df$Upper <- price_forecast + sigma_forecast
+forecast_df$Lower <- price_forecast - sigma_forecast
+
+ggplot() +
+  geom_line(aes(x=as.Date(data_crude$Date), y=data_crude$Price), color="blue") +
+  geom_line(aes(x=forecast_df$Date, y=forecast_df$Forecast), color="red", linetype="dashed") +
+  geom_ribbon(data=forecast_df, aes(x=Date, ymin=Lower, ymax=Upper), fill="grey", alpha=0.3) +
+  labs(title="ARIMA(0,0,0)-GARCH(1,1) Forecast Crude Oil",
+       x="Date", y="Price (USD/barrel)") +
+  theme_minimal()
+```
